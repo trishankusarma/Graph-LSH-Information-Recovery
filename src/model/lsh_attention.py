@@ -1,0 +1,1 @@
+# Core: bucket assignment + sparse attn pairs

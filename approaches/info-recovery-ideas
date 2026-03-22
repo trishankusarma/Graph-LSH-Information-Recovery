@@ -1,0 +1,10 @@
+Information Recovery:
+
+1. Treat dropped pairs P̄ = {(i,j) ∉ P} as a structured missingness problem
+2. Train a lightweight residual recovery module that estimates what sparse attention missed
+3. Use the hash bucket logits ℓQ, ℓK as a proxy for "how confident" the model is about what it dropped
+4. Recovery signal can come from: diffusion, spectral gap, or a secondary low-rank approximation
+
+Primary focus :
+(1) sparse efficiency via LSH, 
+(2) principled recovery of dropped cross-node information.

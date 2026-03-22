@@ -1,0 +1,6 @@
+Titled : "Recovering Dropped Information in Sparse Graph Attention via LSH-Guided Residual Reconstruction"
+
+How much task-relevant signal lives outside the attended pairs, and can we recover it without paying full O(N²) cost?
+
+U gonna find me implementing everything here u need to see how much info is lost during sparse attention.
+- And experiment on information recovery
