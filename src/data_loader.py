@@ -63,15 +63,15 @@ def compute_laplacian_pe(edge_index, num_nodes: int, max_k: int = 64, threshold_
     # Top k eigen values 
     all_eigen_values_sum = sum(eigenvalues[1:])
     cumm_eigen_values = 0
-    eigen_values_to_consider_left, eigen_values_to_consider_right = -1, len(eigenvalues) - 1
+    eigen_values_to_consider_left, eigen_values_to_consider_right = 1, len(eigenvalues) - 1
 
     for index, eigenvalue in enumerate(eigenvalues[1:], start=1):
-        if eigenvalue > 1e-6 and eigen_values_to_consider_left == -1:
-            log("Eigen value set for left index")
-            eigen_values_to_consider_left = index
+        # if eigenvalue > 1e-6 and eigen_values_to_consider_left == -1:
+        #     log("Eigen value set for left index")
+        #     eigen_values_to_consider_left = index
 
-        if eigen_values_to_consider_left == -1:
-            continue
+        # if eigen_values_to_consider_left == -1:
+        #     continue
 
         cumm_eigen_values = cumm_eigen_values + eigenvalue/all_eigen_values_sum
 
@@ -165,8 +165,8 @@ def _idx_to_mask(idx: torch.Tensor, num_nodes: int) -> torch.BoolTensor:
     return mask
 
 if __name__ == "__main__":
-    from .hyperparameters.config import Config
-    config = Config()
+    from .hyperparameters.config import ModelConfig
+    config = ModelConfig()
     for name in ["Cora", "CiteSeer", "PubMed", "ogbn-arxiv"]:
         d, m = load_dataset(name, data_path="./data", max_lap_k = config.max_lap_k, threshold_on_lap_pe = config.threshold_on_lap_pe)
         log(f"{name}: x={d.x.shape} | lap_pe={d.lap_pe.shape} | "

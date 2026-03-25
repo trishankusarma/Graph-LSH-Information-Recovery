@@ -14,29 +14,28 @@ import time
 import os
 import torch
 import torch.nn.functional as F
-from torch_geometric.utils import to_dense_adj
 
 from .data_loader              import load_dataset
 from .model.transformer_model  import SparseGraphTransformer
 from .hyperparameters.config   import get_config
 from .losses.hash_loss         import hash_supervision_loss
 from .losses.reconstruction_loss import recovery_loss
-
+from .utils import log
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-def train_epoch(model, data, adj, optimizer, config, device):
+def train_epoch(model, data, optimizer, config, device):
     model.train()
     optimizer.zero_grad()
 
     logits, aux = model(
-        data.x.to(device),
-        data.lap_pe.to(device),
-        data.edge_index.to(device),
-        data.deg.to(device),
+        data.x,
+        data.lap_pe,
+        data.edge_index,
+        data.deg,
     )
 
-    y = data.y.to(device)
+    y = data.y
 
     # ── Task loss ────────────────────────────────────────────────────
     L_task = F.cross_entropy(logits[data.train_mask], y[data.train_mask])
@@ -46,9 +45,13 @@ def train_epoch(model, data, adj, optimizer, config, device):
     if config.use_hash_loss:
         for bl in aux["bucket_logits"]:
             L_hash += hash_supervision_loss(
-                bl, adj.to(device),
-                data.lap_pe.to(device), config.num_buckets,
+                bl, 
+                data.edge_index,
+                data.lap_pe,
+                data.num_nodes,
+                config.num_buckets,
                 delta=config.spd_delta,
+                gamma=config.spd_gamma
             )
         L_hash /= len(aux["bucket_logits"])
 
@@ -56,16 +59,14 @@ def train_epoch(model, data, adj, optimizer, config, device):
     L_rec = torch.tensor(0.0, device=device)
     if config.use_recovery and aux["confidences"][-1] is not None:
         L_rec = recovery_loss(
-            h_recovered     = model.layers[-1].recovery.norm(
-                              data.x.to(device)[:, :config.hidden_dim]   # placeholder
-                              ) if False else aux["Vs"][-1],          # use V as proxy
+            h_recovered     = aux["h_recovered"][-1],
             V               = aux["Vs"][-1],
             bucket_logits_q = aux["bucket_logits"][-1]["q"],
             confidence      = aux["confidences"][-1],
         )
 
     # ── Total loss ────────────────────────────────────────────────────
-    loss = ((1 - config.hash_lambda) * L_task
+    loss = (L_task
             + config.hash_lambda     * L_hash
             + config.recovery_lambda * L_rec)
 
@@ -85,12 +86,12 @@ def train_epoch(model, data, adj, optimizer, config, device):
 def evaluate(model, data, device):
     model.eval()
     logits, _ = model(
-        data.x.to(device),
-        data.lap_pe.to(device),
-        data.edge_index.to(device),
-        data.deg.to(device),
+        data.x,
+        data.lap_pe,
+        data.edge_index,
+        data.deg,
     )
-    y    = data.y.to(device)
+    y    = data.y
     pred = logits.argmax(dim=-1)
 
     results = {}
@@ -107,30 +108,34 @@ def evaluate(model, data, device):
 
 def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[Train] Device: {device}")
+    log(f"[Train] Device: {device}")
 
     # ── Config ───────────────────────────────────────────────────────
     config = get_config(dataset_name=args.model_to_run)
     config.data_path = args.data_path
-    print(f"[Train] Config: {config}")
 
     # ── Data ─────────────────────────────────────────────────────────
     data, meta = load_dataset(
         config.dataset_name, config.data_path,
         max_lap_k = config.max_lap_k, threshold_on_lap_pe = config.threshold_on_lap_pe
     )
+    config.lap_dim = int(data.lap_pe.shape[1])
+    log(f"[Train] Config: {config}")
 
-    # Dense adjacency for hash loss (small graphs only; use sparse for ogbn-arxiv)
-    if meta["num_nodes"] <= 20_000:
-        adj = to_dense_adj(data.edge_index, max_num_nodes=meta["num_nodes"]).squeeze(0)
-    else:
-        # Approximate with identity for very large graphs
-        adj = torch.eye(meta["num_nodes"])
+    # Moving back to device for efficiency
+    data.x         = data.x.to(device)
+    data.lap_pe    = data.lap_pe.to(device)
+    data.edge_index = data.edge_index.to(device)
+    data.deg       = data.deg.to(device)
+    data.y         = data.y.to(device)
+    data.train_mask = data.train_mask.to(device)
+    data.val_mask   = data.val_mask.to(device)
+    data.test_mask  = data.test_mask.to(device)
 
     # ── Model ─────────────────────────────────────────────────────────
     model = SparseGraphTransformer(config).to(device)
     param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[Train] Parameters: {param_count:,}")
+    log(f"[Train] Parameters: {param_count:,}")
 
     optimizer = torch.optim.Adam(
         model.parameters(), lr=config.lr, weight_decay=config.weight_decay
@@ -145,13 +150,13 @@ def main(args):
     patience_count = 0
     os.makedirs("best_models", exist_ok=True)
 
-    print(f"\n{'Epoch':>6} {'Loss':>8} {'L_task':>8} {'L_hash':>8} "
+    log(f"{'Epoch':>6} {'Loss':>8} {'L_task':>8} {'L_hash':>8} "
           f"{'L_rec':>8} {'Train':>7} {'Val':>7} {'Test':>7} {'Time':>6}")
-    print("─" * 72)
+    log("─" * 72)
 
     for epoch in range(1, config.epochs + 1):
         t0     = time.time()
-        losses = train_epoch(model, data, adj, optimizer, config, device)
+        losses = train_epoch(model, data, optimizer, config, device)
         accs   = evaluate(model, data, device)
         scheduler.step()
 
@@ -167,19 +172,19 @@ def main(args):
             patience_count += 1
 
         if epoch % 10 == 0 or epoch == 1:
-            print(f"{epoch:>6} {losses['loss']:>8.4f} {losses['L_task']:>8.4f} "
+            log(f"{epoch:>6} {losses['loss']:>8.4f} {losses['L_task']:>8.4f} "
                   f"{losses['L_hash']:>8.4f} {losses['L_rec']:>8.4f} "
                   f"{accs['train']:>7.4f} {accs['val']:>7.4f} "
                   f"{accs['test']:>7.4f} {elapsed:>5.1f}s")
 
         if patience_count >= config.patience:
-            print(f"\n[Train] Early stopping at epoch {epoch}")
+            log(f"\n[Train] Early stopping at epoch {epoch}")
             break
 
-    print(f"\n{'='*50}")
-    print(f"Best Val Acc  : {best_val_acc:.4f}")
-    print(f"Best Test Acc : {best_test_acc:.4f}")
-    print(f"Model saved   : best_models/{config.dataset_name}_best.pt")
+    log(f"\n{'='*50}")
+    log(f"Best Val Acc  : {best_val_acc:.4f}")
+    log(f"Best Test Acc : {best_test_acc:.4f}")
+    log(f"Model saved   : best_models/{config.dataset_name}_best.pt")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

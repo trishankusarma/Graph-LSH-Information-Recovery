@@ -6,6 +6,13 @@ echo "Running on $(hostname) with PID $$"
 echo "Task $1"
 echo "Path to train/val data $3"
 
+valid_datasets=("Cora" "CiteSeer" "PubMed" "ogbn-arxiv")
+
+if [[ ! " ${valid_datasets[@]} " =~ " $2 " ]]; then
+    echo "$2 :: Choose from: Cora, CiteSeer, PubMed, ogbn-arxiv"
+    exit 1
+fi
+
 if [ $# -eq 3 ]; then
     if [ "$1" = "train" ]; then
         echo "Training model on $2"

@@ -21,9 +21,9 @@ class GatedFusion(nn.Module):
     hidden_dim : d
     """
 
-    def __init__(self, hidden_dim: int):
+    def __init__(self, config):
         super().__init__()
-        self.gate = nn.Linear(2 * hidden_dim, hidden_dim)
+        self.gate = nn.Linear(2 * config.hidden_dim, config.hidden_dim)
 
     def forward(self, h_local: torch.Tensor, h_global: torch.Tensor) -> torch.Tensor:
         """

@@ -33,7 +33,7 @@ class TransformerLayer(nn.Module):
         # Fusion + recovery
         self.fusion        = GatedFusion(config)
         self.use_recovery  = config.use_recovery
-        if use_recovery:
+        if self.use_recovery:
             self.recovery = InformationRecovery(config)
 
         # FFN
@@ -75,17 +75,19 @@ class TransformerLayer(nn.Module):
         h_fused = self.norm1(h + h_fused)            # residual
 
         # Recovery
+        h_post_recovery = h_fused                    # default when no recovery
         confidence = None
         if self.use_recovery:
             bk = bucket_logits["k"].argmax(dim=-1)
-            h_fused, confidence = self.recovery(
+            h_post_recovery, confidence = self.recovery(
                 h_fused, V, bucket_logits["q"], bk
             )
+            h_fused = h_post_recovery                    # FFN gets recovered embedding
 
         # FFN
         h_out = self.norm2(h_fused + self.ffn(h_fused))
 
-        return h_out, bucket_logits, confidence, V
+        return h_out, bucket_logits, confidence, V, h_post_recovery
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,14 +144,16 @@ class SparseGraphTransformer(nn.Module):
         all_bucket_logits = []
         all_confidences   = []
         all_Vs            = []
+        all_h_recovered   = []
 
         for layer in self.layers:
-            h, bucket_logits, confidence, V = layer(
+            h, bucket_logits, confidence, V, h_post_recovery = layer(
                 h, lap_pe, edge_index, deg
             )
             all_bucket_logits.append(bucket_logits)
             all_confidences.append(confidence)
             all_Vs.append(V)
+            all_h_recovered.append(h_post_recovery) 
 
         logits = self.classifier(h)                  # (N, out_dim)
 
@@ -157,5 +161,6 @@ class SparseGraphTransformer(nn.Module):
             "bucket_logits": all_bucket_logits,       # list of dicts per layer
             "confidences"  : all_confidences,         # list of (N,) or None
             "Vs"           : all_Vs,                  # list of (N, d)
+            "h_recovered"  : all_h_recovered
         }
         return logits, aux

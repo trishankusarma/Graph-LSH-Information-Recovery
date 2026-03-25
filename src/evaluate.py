@@ -16,7 +16,7 @@ from sklearn.metrics import classification_report
 from .data_loader             import load_dataset
 from .model.transformer_model import SparseGraphTransformer
 from .hyperparameters.config  import get_config
-
+from .utils import log
 
 @torch.no_grad()
 def full_evaluate(model, data, device, meta):
@@ -31,18 +31,18 @@ def full_evaluate(model, data, device, meta):
     y    = data.y.to(device)
     pred = logits.argmax(dim=-1)
 
-    print("\n" + "="*50)
+    log("\n" + "="*50)
     for split, mask in [("Train", data.train_mask),
                          ("Val",   data.val_mask),
                          ("Test",  data.test_mask)]:
         correct = (pred[mask] == y[mask]).sum().item()
         total   = mask.sum().item()
         acc     = correct / total if total > 0 else 0.0
-        print(f"{split:>6} Accuracy : {acc:.4f}  ({correct}/{total})")
+        log(f"{split:>6} Accuracy : {acc:.4f}  ({correct}/{total})")
 
     # Detailed test report
-    print("\n── Test Set Classification Report ──")
-    print(classification_report(
+    log("\n── Test Set Classification Report ──")
+    log(classification_report(
         y[data.test_mask].cpu().numpy(),
         pred[data.test_mask].cpu().numpy(),
         digits=4,
@@ -51,12 +51,12 @@ def full_evaluate(model, data, device, meta):
     # Confidence analysis
     if aux["confidences"][-1] is not None:
         conf = aux["confidences"][-1]
-        print(f"\n── Recovery Module Confidence ──")
-        print(f"  Mean confidence  : {conf.mean():.4f}")
-        print(f"  Std  confidence  : {conf.std():.4f}")
-        print(f"  Low-conf nodes   : {(conf < 0.3).sum().item()} "
+        log(f"\n── Recovery Module Confidence ──")
+        log(f"  Mean confidence  : {conf.mean():.4f}")
+        log(f"  Std  confidence  : {conf.std():.4f}")
+        log(f"  Low-conf nodes   : {(conf < 0.3).sum().item()} "
               f"({(conf < 0.3).float().mean()*100:.1f}%)")
-        print(f"  High-conf nodes  : {(conf > 0.7).sum().item()} "
+        log(f"  High-conf nodes  : {(conf > 0.7).sum().item()} "
               f"({(conf > 0.7).float().mean()*100:.1f}%)")
 
 
@@ -73,7 +73,7 @@ def main(args):
     model = SparseGraphTransformer(cfg).to(device)
     ckpt  = f"best_models/{cfg.dataset_name}_best.pt"
     model.load_state_dict(torch.load(ckpt, map_location=device))
-    print(f"[Eval] Loaded checkpoint: {ckpt}")
+    log(f"[Eval] Loaded checkpoint: {ckpt}")
 
     full_evaluate(model, data, device, meta)
 

@@ -10,14 +10,14 @@ class ModelConfig:
     out_dim: int = 7            # Cora=7 | CiteSeer=6 | PubMed=3 | arxiv=40
 
     # ── Laplacian PE ──────────────────────────────────────────────────
-    max_lap_k :int = 64
+    max_lap_k :int = 32
     threshold_on_lap_pe :float = 0.95
     lap_dim: int = 16           # k — number of eigenvectors
 
     # ── LSH Attention ─────────────────────────────────────────────────
     num_buckets: int = 8        # B — number of hash buckets
     num_heads: int = 4          # multi-head attention heads
-    dropout: float = 0.1
+    dropout: float = 0.5
 
     # ── Architecture ──────────────────────────────────────────────────
     num_layers: int = 4         # L — number of transformer layers
@@ -26,10 +26,11 @@ class ModelConfig:
     # ── Structural biases ─────────────────────────────────────────────
     max_spd: int = 5            # max shortest path distance to embed
     max_degree: int = 10        # max degree to embed
+    num_spd_bins: int = 10
 
     # ── Recovery module ───────────────────────────────────────────────
     use_recovery: bool = True
-    recovery_lambda: float = 0.5   # μ — weight of recovery loss
+    recovery_lambda: float = 0.25   # μ — weight of recovery loss
 
     # ── Hash supervision ──────────────────────────────────────────────
     use_hash_loss: bool = True

@@ -22,7 +22,7 @@ class LocalGATBranch(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        assert hidden_dim % num_heads == 0
+        assert config.hidden_dim % config.num_heads == 0
 
         self.gat = GATConv(
             in_channels=config.hidden_dim,

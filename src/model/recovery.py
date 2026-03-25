@@ -2,7 +2,7 @@
 """
 recovery.py
 ───────────
-Information Recovery Module  ← Novel Contribution
+Information Recovery Module 
 
 INTUITION
 ─────────
@@ -32,8 +32,8 @@ class InformationRecovery(nn.Module):
     """
     Args
     ----
-    hidden_dim   : d  — embedding dimension
-    num_buckets  : B
+    config.hidden_dim : d  — embedding dimension
+    config.num_buckets: B
     """
 
     def __init__(self, config):
@@ -42,10 +42,8 @@ class InformationRecovery(nn.Module):
         self.num_buckets = config.num_buckets
 
         # Projects prototype-weighted sum back to hidden_dim
-        self.W_r   = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
-        self.norm  = nn.LayerNorm(config.hidden_dim)
-
-    # ─────────────────────────────────────────────────────────────────
+        self.W_r = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
+        # No norm here — TransformerLayer handles LayerNorm after recovery
 
     def forward(self, h_fused: torch.Tensor, V: torch.Tensor,
                 bucket_logits_q: torch.Tensor,
@@ -54,14 +52,14 @@ class InformationRecovery(nn.Module):
         Parameters
         ----------
         h_fused          : (N, d)   — output of gated fusion
-        V                : (N, d)   — value matrix (same as attention V)
+        V                : (N, d)   — value matrix
         bucket_logits_q  : (N, B)   — ℓ_Q (raw, before softmax)
         bk               : (N,)     — hard key-bucket assignment (long)
 
         Returns
         -------
-        h_recovered   : (N, d)  — recovered embeddings
-        confidence    : (N,)    — per-node confidence score ∈ [0,1]
+        h_post_recovery : (N, d)  — recovered embeddings
+        confidence      : (N,)   — per-node confidence score ∈ [0,1]
         """
         N, d = h_fused.shape
         B    = self.num_buckets
@@ -70,37 +68,44 @@ class InformationRecovery(nn.Module):
         # ── Soft bucket weights ───────────────────────────────────────
         p_q = F.softmax(bucket_logits_q, dim=-1)       # (N, B)
 
-        # ── Bucket prototypes  μ_b = mean(V_j | bK(j) = b) ───────────
-        prototypes = torch.zeros(B, d, device=device)
+        # ── Bucket prototypes — fully vectorised ──────────────────────
+        # μ_b = mean(V_j | bK(j) = b)
+        # scatter_add to sum V into each bucket, divide by count
         counts     = torch.zeros(B, device=device)
+        prototypes = torch.zeros(B, d, device=device)
 
-        for b in range(B):
-            mask = bk == b
-            if mask.any():
-                prototypes[b] = V[mask].mean(dim=0)
-                counts[b]     = mask.sum().float()
+        counts.scatter_add_(
+            0, bk,
+            torch.ones(N, device=device)
+        )                                               # (B,) — nodes per bucket
 
-        # Fallback for empty buckets: use global mean
+        prototypes.scatter_add_(
+            0,
+            bk.unsqueeze(-1).expand(-1, d),            # (N, d) index
+            V
+        )                                               # (B, d) — sum of V per bucket
+
+        # Mean — clamp counts to avoid div by zero
+        prototypes = prototypes / counts.clamp(min=1).unsqueeze(-1)   # (B, d)
+
+        # Fallback for empty buckets → global mean of V
         empty = counts == 0
         if empty.any():
-            global_mean = V.mean(dim=0)
-            prototypes[empty] = global_mean
+            prototypes[empty] = V.mean(dim=0)
 
         # ── Residual  r_i = W_r · Σ_b p_b^(i) · μ_b ─────────────────
-        # p_q: (N, B),  prototypes: (B, d)  →  (N, d)
         proto_weighted = p_q @ prototypes              # (N, d)
         residual       = self.W_r(proto_weighted)      # (N, d)
 
         # ── Confidence  c_i = 1 - H(p) / log(B) ─────────────────────
-        #   H(p) = -Σ p_b log(p_b)   ∈ [0, log(B)]
-        entropy    = -(p_q * (p_q + 1e-9).log()).sum(dim=-1)   # (N,)
+        # H(p) = -Σ p_b log(p_b)  — clamp for numerical stability
+        entropy     = -(p_q * p_q.clamp(min=1e-9).log()).sum(dim=-1)  # (N,)
         max_entropy = torch.log(torch.tensor(float(B), device=device))
-        confidence  = 1.0 - entropy / max_entropy               # (N,)  ∈ [0,1]
+        confidence  = 1.0 - entropy / max_entropy                      # (N,) ∈ [0,1]
 
         # ── Confidence-gated recovery ─────────────────────────────────
-        #   Uncertain nodes (low c) receive more recovery
-        gate = (1.0 - confidence).unsqueeze(-1)                 # (N, 1)
-        h_recovered = h_fused + gate * residual                 # (N, d)
-        h_recovered = self.norm(h_recovered)
+        # uncertain nodes (low c) receive more residual signal
+        gate = (1.0 - confidence).unsqueeze(-1)             # (N, 1)
+        h_post_recovery = h_fused + gate * residual                    # (N, d)
 
-        return h_recovered, confidence
+        return h_post_recovery, confidence
