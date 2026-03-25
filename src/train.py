@@ -136,6 +136,9 @@ def main(args):
     model = SparseGraphTransformer(config).to(device)
     param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log(f"[Train] Parameters: {param_count:,}")
+    
+    for name, param in model.named_parameters():
+        print(f"{name:40} | shape: {list(param.shape)} | params: {param.numel()}")
 
     optimizer = torch.optim.Adam(
         model.parameters(), lr=config.lr, weight_decay=config.weight_decay

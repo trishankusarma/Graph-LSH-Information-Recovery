@@ -1,0 +1,66 @@
+sparse_lsh_graph/
+│
+├── data/
+│
+├── models/
+│   ├── lsh_attention.py     # Core: bucket assignment + sparse attn pairs
+│   ├── gat_local.py         # Local branch (standard GAT)
+│   ├── fusion.py            # Gated local-global fusion
+│   ├── recovery.py          # NEW: Information Recovery Module
+│   └── full_model.py        # Stacks everything, L layers
+│
+├── losses/
+│   ├── hash_loss.py         # KL(ψ̃ || p_Q) from your paper
+│   └── recovery_loss.py     # NEW: reconstruction objective
+|
+└── loader.py                # Cora, CiteSeer, OGBN loaders via PyG
+├── train.py                 # Training loop
+├── evaluate.py              # Node classification metrics
+└── config.yaml              # Hyperparams
+
+                Input Graph G = (V, E)
+                Node Features X ∈ R^{N×dx}
+                        │
+                        ▼
+                ┌─────────────────────────┐
+                │   Laplacian PE (λ)      │  ← top-k eigenvectors of graph Laplacian
+                │   z_i = [x_i || λ_i]   │
+                └──────────┬──────────────┘
+                        │
+                    ┌──────▼──────┐
+                    │  Linear     │  Q = W_Q z,  K = W_K z,  V = W_V z
+                    │  Projections│
+                    └──────┬──────┘
+                            |
+        ╔═══════════════════╧═════════════════════╗
+        ║           L × Transformer Layers        ║
+        ╠═════════════════════════════════════════╣
+        ║                                         ║
+        ║   ┌─────────────┐   ┌────────────────┐  ║
+        ║   │ LOCAL Branch│   │ GLOBAL Branch  │  ║
+        ║   │    (GAT)    │   │  (LSH Sparse   │  ║
+        ║   │             │   │   Attention)   │  ║
+        ║   └──────┬──────┘   └───────┬────────┘  ║
+        ║          │                  │           ║
+        ║          └────────┬─────────┘           ║
+        ║                   │                     ║
+        ║          ┌────────▼────────┐            ║
+        ║          │  Gated Fusion   │            ║
+        ║          │  g_i = σ(W_g[   │            ║
+        ║          │  h_local||h_glob│            ║
+        ║          └────────┬────────┘            ║
+        ║                   │                     ║
+        ║          ┌────────▼────────┐            ║
+        ║          │ RECOVERY Module │  ← NEW     ║
+        ║          │ (dropped pairs) │            ║
+        ║          └────────┬────────┘            ║
+        ║                   │                     ║
+        ║          ┌────────▼────────┐            ║
+        ║          │   FFN + LayerNorm│           ║
+        ║          └────────┬────────┘            ║
+        ╚══════════════════╧═════════════════════+╝
+                            │
+                ┌────────▼────────┐
+                │  Softmax(W_c H) │
+                │  Node Classify  │
+                └─────────────────┘

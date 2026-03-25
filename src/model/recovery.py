@@ -47,7 +47,7 @@ class InformationRecovery(nn.Module):
 
     def forward(self, h_fused: torch.Tensor, V: torch.Tensor,
                 bucket_logits_q: torch.Tensor,
-                bk: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                bucket_logits_k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Parameters
         ----------
@@ -61,6 +61,8 @@ class InformationRecovery(nn.Module):
         h_post_recovery : (N, d)  — recovered embeddings
         confidence      : (N,)   — per-node confidence score ∈ [0,1]
         """
+        bk = bucket_logits_k.argmax(dim=-1)
+
         N, d = h_fused.shape
         B    = self.num_buckets
         device = h_fused.device

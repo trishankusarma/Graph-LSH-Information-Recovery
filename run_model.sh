@@ -1,32 +1,44 @@
 #!/bin/bash
-set -e  # exit on any error
+set -e
 
 echo "Lets go..."
 echo "Running on $(hostname) with PID $$"
-echo "Task $1"
-echo "Path to train/val data $3"
 
-valid_datasets=("Cora" "CiteSeer" "PubMed" "ogbn-arxiv")
-
-if [[ ! " ${valid_datasets[@]} " =~ " $2 " ]]; then
-    echo "$2 :: Choose from: Cora, CiteSeer, PubMed, ogbn-arxiv"
+if [ $# -lt 3 ]; then
+    echo "Wrong Format :: bash run_model.sh train/eval dataset1 [dataset2 ...] path"
     exit 1
 fi
 
-if [ $# -eq 3 ]; then
-    if [ "$1" = "train" ]; then
-        echo "Training model on $2"
-        python -m src.train --model-to-run $2 --data-path $3
+task=$1
+path=${@: -1}                      # last argument = path
+datasets=("${@:2:$#-2}")          # everything between = datasets
 
-    elif [ "$1" = "eval" ]; then
-        echo "Evaluating model on $2"
-        python -m src.eval --model-to-run $2 --data-path $3
+echo "Task: $task"
+echo "Datasets: ${datasets[@]}"
+echo "Path: $path"
+
+valid_datasets=("Cora" "CiteSeer" "PubMed" "ogbn-arxiv")
+
+# validate all datasets
+for ds in "${datasets[@]}"; do
+    if [[ ! " ${valid_datasets[@]} " =~ " $ds " ]]; then
+        echo "$ds :: Choose from: Cora, CiteSeer, PubMed, ogbn-arxiv"
+        exit 1
+    fi
+done
+
+# run for each dataset
+for ds in "${datasets[@]}"; do
+    if [ "$task" = "train" ]; then
+        echo "Training model on $ds"
+        python -m src.train --model-to-run "$ds" --data-path "$path"
+
+    elif [ "$task" = "eval" ]; then
+        echo "Evaluating model on $ds"
+        python -m src.eval --model-to-run "$ds" --data-path "$path"
 
     else
         echo "Error :: 1st argument should strictly be train/eval"
         exit 1
     fi
-else
-    echo "Wrong Format :: Please run bash run_model.sh train/eval model-to-run path-to-train-data"
-    exit 1
-fi
+done

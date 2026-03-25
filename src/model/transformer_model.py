@@ -71,16 +71,15 @@ class TransformerLayer(nn.Module):
         )
 
         # Fusion
-        h_fused = self.fusion(h_local, h_global)
+        h_fused = self.fusion(h_local, h_global)     # (N, d)
         h_fused = self.norm1(h + h_fused)            # residual
 
         # Recovery
         h_post_recovery = h_fused                    # default when no recovery
         confidence = None
         if self.use_recovery:
-            bk = bucket_logits["k"].argmax(dim=-1)
             h_post_recovery, confidence = self.recovery(
-                h_fused, V, bucket_logits["q"], bk
+                h_fused, V, bucket_logits["q"], bucket_logits["k"]
             )
             h_fused = h_post_recovery                    # FFN gets recovered embedding
 
