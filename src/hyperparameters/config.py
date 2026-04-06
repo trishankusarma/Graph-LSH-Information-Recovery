@@ -14,6 +14,9 @@ class ModelConfig:
     threshold_on_lap_pe :float = 0.95
     lap_dim: int = 16           # k — number of eigenvectors
 
+    # ------- GAT -------
+    gat_dropout: float = 0.5
+
     # ── LSH Attention ─────────────────────────────────────────────────
     num_buckets: int = 8        # B — number of hash buckets
     num_heads: int = 4          # multi-head attention heads

@@ -3,6 +3,10 @@
 transformer_model.py
 ────────────────────
 Full model: L layers of [LocalGAT + LSHAttention + GatedFusion + Recovery] + FFN
+
+Normalisation strategy: Pre-LN throughout
+  Pre-LN: h → norm → sublayer → add(h, out)
+  More stable than Post-LN for deeper models, no warmup needed.
 """
 
 import torch
@@ -21,7 +25,7 @@ class TransformerLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        # Q, K, V projections  (input is z = [x || λ] at layer 0, else h)
+        # Q, K, V projections
         self.W_Q = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
         self.W_K = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
         self.W_V = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
@@ -31,8 +35,8 @@ class TransformerLayer(nn.Module):
         self.global_branch = LearnedLSHAttention(config)
 
         # Fusion + recovery
-        self.fusion        = GatedFusion(config)
-        self.use_recovery  = config.use_recovery
+        self.fusion       = GatedFusion(config)
+        self.use_recovery = config.use_recovery
         if self.use_recovery:
             self.recovery = InformationRecovery(config)
 
@@ -44,47 +48,59 @@ class TransformerLayer(nn.Module):
             nn.Linear(config.ffn_dim, config.hidden_dim),
             nn.Dropout(config.dropout),
         )
-        self.norm1 = nn.LayerNorm(config.hidden_dim)
-        self.norm2 = nn.LayerNorm(config.hidden_dim)
+
+        # Pre-LN norms — one per sublayer
+        self.norm_attn   = nn.LayerNorm(config.hidden_dim)   # before attention branches
+        self.norm_ffn    = nn.LayerNorm(config.hidden_dim)   # before FFN
 
     def forward(self, h: torch.Tensor, lap_pe: torch.Tensor,
                 edge_index: torch.Tensor, deg: torch.Tensor):
         """
+        Pre-LN forward:
+          h → norm → [local | global] → fuse → residual
+            → norm → recovery (optional) → residual
+            → norm → FFN → residual
+
         Returns
         -------
-        h_out         : (N, d)
-        bucket_logits : dict  'q', 'k'  → (N, B)
-        confidence    : (N,)  or None
-        V             : (N, d) value matrix (for recovery loss)
+        h_out           : (N, d)
+        bucket_logits   : dict 'q', 'k' → (N, B)
+        confidence      : (N,) or None
+        V               : (N, d)
+        h_post_recovery : (N, d)
         """
-        # Projections
-        Q = self.W_Q(h)
-        K = self.W_K(h)
-        V = self.W_V(h)
+        # ── Attention sublayer — Pre-LN ───────────────────────────────
+        h_norm = self.norm_attn(h)                   # normalise input first
 
-        # Local branch
-        h_local  = self.local_branch(h, edge_index)
+        Q = self.W_Q(h_norm)
+        K = self.W_K(h_norm)
+        V = self.W_V(h_norm)
 
-        # Global branch (LSH attention)
+        # Local branch operates on normalised h
+        h_local  = self.local_branch(h_norm, edge_index)
+
+        # Global branch
         h_global, bucket_logits = self.global_branch(
             Q, K, V, lap_pe, edge_index, deg
         )
 
-        # Fusion
+        # Fuse local + global then residual add
         h_fused = self.fusion(h_local, h_global)     # (N, d)
-        h_fused = self.norm1(h + h_fused)            # residual
+        h       = h + h_fused                        # residual — no norm here (Pre-LN)
 
-        # Recovery
-        h_post_recovery = h_fused                    # default when no recovery
-        confidence = None
+        # ── Recovery sublayer ─────────────────────────────────────────
+        h_post_recovery = h                          # default — identity
+        confidence      = None
+
         if self.use_recovery:
             h_post_recovery, confidence = self.recovery(
-                h_fused, V, bucket_logits["q"], bucket_logits["k"]
+                h, V, bucket_logits["q"], bucket_logits["k"]    # ← pass raw (N,B) logits
             )
-            h_fused = h_post_recovery                    # FFN gets recovered embedding
+            h = h_post_recovery           # effectively h = h_post_recovery
+                                                     # written as residual for clarity
 
-        # FFN
-        h_out = self.norm2(h_fused + self.ffn(h_fused))
+        # ── FFN sublayer — Pre-LN ─────────────────────────────────────
+        h_out = h + self.ffn(self.norm_ffn(h))       # pre-norm then residual
 
         return h_out, bucket_logits, confidence, V, h_post_recovery
 
@@ -97,17 +113,21 @@ class SparseGraphTransformer(nn.Module):
 
     Args
     ----
-    config : ModelConfig  from hyperparameters/config.py
+    config : ModelConfig from hyperparameters/config.py
     """
 
     def __init__(self, config):
         super().__init__()
         self.config = config
-        d   = config.hidden_dim
-        k   = config.lap_dim
+
+        d = config.hidden_dim
+        k = config.lap_dim
 
         # Input projection: (in_dim + lap_dim) → hidden_dim
         self.input_proj = nn.Linear(config.in_dim + k, d)
+
+        # Final norm before classifier 
+        self.final_norm = nn.LayerNorm(d)
 
         # L transformer layers
         self.layers = nn.ModuleList([
@@ -132,13 +152,12 @@ class SparseGraphTransformer(nn.Module):
         """
         Returns
         -------
-        logits         : (N, num_classes)
-        aux            : dict with 'bucket_logits', 'confidences', 'Vs'
-                         — used by loss functions
+        logits : (N, num_classes)
+        aux    : dict with 'bucket_logits', 'confidences', 'Vs', 'h_recovered'
         """
         # Augment input with Laplacian PE then project
-        z = torch.cat([x, lap_pe], dim=-1)           # (N, in_dim+k)
-        h = self.input_proj(z)                        # (N, d)
+        z = torch.cat([x, lap_pe], dim=-1)    # (N, in_dim + k)
+        h = self.input_proj(z)                 # (N, d)
 
         all_bucket_logits = []
         all_confidences   = []
@@ -152,14 +171,16 @@ class SparseGraphTransformer(nn.Module):
             all_bucket_logits.append(bucket_logits)
             all_confidences.append(confidence)
             all_Vs.append(V)
-            all_h_recovered.append(h_post_recovery) 
+            all_h_recovered.append(h_post_recovery)
 
-        logits = self.classifier(h)                  # (N, out_dim)
+        # Final norm before classification (Pre-LN convention)
+        h      = self.final_norm(h)
+        logits = self.classifier(h)            # (N, out_dim)
 
         aux = {
-            "bucket_logits": all_bucket_logits,       # list of dicts per layer
-            "confidences"  : all_confidences,         # list of (N,) or None
-            "Vs"           : all_Vs,                  # list of (N, d)
-            "h_recovered"  : all_h_recovered
+            "bucket_logits": all_bucket_logits,
+            "confidences"  : all_confidences,
+            "Vs"           : all_Vs,
+            "h_recovered"  : all_h_recovered,
         }
         return logits, aux

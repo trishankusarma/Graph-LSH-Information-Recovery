@@ -54,7 +54,7 @@ class InformationRecovery(nn.Module):
         h_fused          : (N, d)   — output of gated fusion
         V                : (N, d)   — value matrix
         bucket_logits_q  : (N, B)   — ℓ_Q (raw, before softmax)
-        bk               : (N,)     — hard key-bucket assignment (long)
+        bucket_logits_k  : (N, B) — raw key bucket logits (argmax taken internally)
 
         Returns
         -------
@@ -107,7 +107,8 @@ class InformationRecovery(nn.Module):
 
         # ── Confidence-gated recovery ─────────────────────────────────
         # uncertain nodes (low c) receive more residual signal
-        gate = (1.0 - confidence).unsqueeze(-1)             # (N, 1)
+        min_gate = 0.1
+        gate = min_gate + (1.0 - min_gate) * (1.0 - confidence.detach()).unsqueeze(-1)
         h_post_recovery = h_fused + gate * residual                    # (N, d)
 
         return h_post_recovery, confidence

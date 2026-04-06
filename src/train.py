@@ -137,8 +137,8 @@ def main(args):
     param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log(f"[Train] Parameters: {param_count:,}")
     
-    for name, param in model.named_parameters():
-        print(f"{name:40} | shape: {list(param.shape)} | params: {param.numel()}")
+    # for name, param in model.named_parameters():
+    #     print(f"{name:40} | shape: {list(param.shape)} | params: {param.numel()}")
 
     optimizer = torch.optim.Adam(
         model.parameters(), lr=config.lr, weight_decay=config.weight_decay
@@ -157,13 +157,12 @@ def main(args):
           f"{'L_rec':>8} {'Train':>7} {'Val':>7} {'Test':>7} {'Time':>6}")
     log("─" * 72)
 
+    t0 = time.time()
+
     for epoch in range(1, config.epochs + 1):
-        t0     = time.time()
         losses = train_epoch(model, data, optimizer, config, device)
         accs   = evaluate(model, data, device)
         scheduler.step()
-
-        elapsed = time.time() - t0
 
         if accs["val"] > best_val_acc:
             best_val_acc  = accs["val"]
@@ -175,6 +174,9 @@ def main(args):
             patience_count += 1
 
         if epoch % 10 == 0 or epoch == 1:
+            elapsed = time.time() - t0
+            t0 = time.time()
+            
             log(f"{epoch:>6} {losses['loss']:>8.4f} {losses['L_task']:>8.4f} "
                   f"{losses['L_hash']:>8.4f} {losses['L_rec']:>8.4f} "
                   f"{accs['train']:>7.4f} {accs['val']:>7.4f} "

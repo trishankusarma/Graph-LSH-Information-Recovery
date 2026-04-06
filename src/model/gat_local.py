@@ -17,7 +17,7 @@ class LocalGATBranch(nn.Module):
     ----
     hidden_dim : d  — input AND output embedding dimension
     num_heads  : H  — GAT attention heads (output is projected back to d)
-    dropout    : float
+    gat_dropout    : float
     """
 
     def __init__(self, config):
@@ -28,18 +28,16 @@ class LocalGATBranch(nn.Module):
             in_channels=config.hidden_dim,
             out_channels=config.hidden_dim // config.num_heads,
             heads=config.num_heads,
-            dropout=config.dropout,
+            dropout=config.gat_dropout,
             concat=True,               # output = num_heads × (hidden_dim/num_heads) = hidden_dim
         )
-        self.norm = nn.LayerNorm(config.hidden_dim)
-        self.drop = nn.Dropout(config.dropout)
+        self.drop = nn.Dropout(config.gat_dropout)
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         """
-        x          : (N, hidden_dim)
+        normalized x          : (N, hidden_dim)
         edge_index : (2, E)
         returns    : (N, hidden_dim)
         """
-        h = self.gat(x, edge_index)       # (N, hidden_dim)
-        h = self.drop(h)
-        return self.norm(x + h)           # residual + norm
+        h = self.gat(x, edge_index)    # (N, hidden_dim) :: attend on normalised input
+        return self.drop(h)
