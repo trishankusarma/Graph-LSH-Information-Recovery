@@ -20,7 +20,7 @@ from .model.transformer_model  import SparseGraphTransformer
 from .hyperparameters.config   import get_config
 from .losses.hash_loss         import hash_supervision_loss
 from .losses.reconstruction_loss import recovery_loss
-from .utils import log
+from .utils import log, plot_training
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -40,12 +40,12 @@ def train_epoch(model, data, optimizer, config, device):
     # ── Task loss ────────────────────────────────────────────────────
     L_task = F.cross_entropy(logits[data.train_mask], y[data.train_mask])
 
-    # ── Hash loss  (averaged over layers) ────────────────────────────
+    # ── Hash loss  (last layer only) ─────────────────────────────────
     L_hash = torch.tensor(0.0, device=device)
     if config.use_hash_loss:
         for bl in aux["bucket_logits"]:
             L_hash += hash_supervision_loss(
-                bl, 
+                bl,
                 data.edge_index,
                 data.lap_pe,
                 data.num_nodes,
@@ -136,9 +136,6 @@ def main(args):
     model = SparseGraphTransformer(config).to(device)
     param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
     log(f"[Train] Parameters: {param_count:,}")
-    
-    # for name, param in model.named_parameters():
-    #     print(f"{name:40} | shape: {list(param.shape)} | params: {param.numel()}")
 
     optimizer = torch.optim.Adam(
         model.parameters(), lr=config.lr, weight_decay=config.weight_decay
@@ -147,6 +144,18 @@ def main(args):
         optimizer, T_max=config.epochs
     )
 
+    # ── History tracking ──────────────────────────────────────────────
+    history = {
+        "epochs"   : [],
+        "loss"     : [],
+        "L_task"   : [],
+        "L_hash"   : [],
+        "L_rec"    : [],
+        "train_acc": [],
+        "val_acc"  : [],
+        "test_acc" : [],
+    }
+
     # ── Training loop ─────────────────────────────────────────────────
     best_val_acc   = 0.0
     best_test_acc  = 0.0
@@ -154,7 +163,7 @@ def main(args):
     os.makedirs("best_models", exist_ok=True)
 
     log(f"{'Epoch':>6} {'Loss':>8} {'L_task':>8} {'L_hash':>8} "
-          f"{'L_rec':>8} {'Train':>7} {'Val':>7} {'Test':>7} {'Time':>6}")
+        f"{'L_rec':>8} {'Train':>7} {'Val':>7} {'Test':>7} {'Time':>6}")
     log("─" * 72)
 
     t0 = time.time()
@@ -164,9 +173,19 @@ def main(args):
         accs   = evaluate(model, data, device)
         scheduler.step()
 
+        # Record history every epoch
+        history["epochs"].append(epoch)
+        history["loss"].append(losses["loss"])
+        history["L_task"].append(losses["L_task"])
+        history["L_hash"].append(losses["L_hash"])
+        history["L_rec"].append(losses["L_rec"])
+        history["train_acc"].append(accs["train"])
+        history["val_acc"].append(accs["val"])
+        history["test_acc"].append(accs["test"])
+
         if accs["val"] > best_val_acc:
-            best_val_acc  = accs["val"]
-            best_test_acc = accs["test"]
+            best_val_acc   = accs["val"]
+            best_test_acc  = accs["test"]
             patience_count = 0
             torch.save(model.state_dict(),
                        f"best_models/{config.dataset_name}_best.pt")
@@ -176,20 +195,23 @@ def main(args):
         if epoch % 10 == 0 or epoch == 1:
             elapsed = time.time() - t0
             t0 = time.time()
-            
             log(f"{epoch:>6} {losses['loss']:>8.4f} {losses['L_task']:>8.4f} "
-                  f"{losses['L_hash']:>8.4f} {losses['L_rec']:>8.4f} "
-                  f"{accs['train']:>7.4f} {accs['val']:>7.4f} "
-                  f"{accs['test']:>7.4f} {elapsed:>5.1f}s")
+                f"{losses['L_hash']:>8.4f} {losses['L_rec']:>8.4f} "
+                f"{accs['train']:>7.4f} {accs['val']:>7.4f} "
+                f"{accs['test']:>7.4f} {elapsed:>5.1f}s")
 
         if patience_count >= config.patience:
             log(f"\n[Train] Early stopping at epoch {epoch}")
             break
 
+    # ── Final results ─────────────────────────────────────────────────
     log(f"\n{'='*50}")
     log(f"Best Val Acc  : {best_val_acc:.4f}")
     log(f"Best Test Acc : {best_test_acc:.4f}")
     log(f"Model saved   : best_models/{config.dataset_name}_best.pt")
+
+    # ── Plot ──────────────────────────────────────────────────────────
+    plot_training(history, config.dataset_name, save_dir="plots")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
