@@ -14,6 +14,8 @@ import time
 import os
 import torch
 import torch.nn.functional as F
+import random
+import numpy as np
 
 from .data_loader              import load_dataset
 from .model.transformer_model  import SparseGraphTransformer
@@ -23,6 +25,18 @@ from .losses.reconstruction_loss import recovery_loss
 from .utils import log, plot_training
 
 # ─────────────────────────────────────────────────────────────────────────────
+def set_seed(seed=42):
+    # 1. Set basic seeds
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # For multi-GPU
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    
+    # 2. Lock down CuDNN
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 def train_epoch(model, data, optimizer, config, device):
     model.train()
@@ -222,4 +236,7 @@ if __name__ == "__main__":
                         help="Dataset: Cora | CiteSeer | PubMed | ogbn-arxiv")
     parser.add_argument("--data-path",    type=str, default="./data")
     args = parser.parse_args()
+
+    # Setting seed for reproducibility
+    set_seed(42)
     main(args)
