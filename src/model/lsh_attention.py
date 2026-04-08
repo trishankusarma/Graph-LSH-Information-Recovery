@@ -91,8 +91,11 @@ class LearnedLSHAttention(nn.Module):
         h_global     : (N, hidden_dim)
         bucket_logits: dict with 'q' and 'k' → (N, B)  [for hash loss]
         """
-        N = Q.size(0)
+        N, H, D_h = Q.size(0), self.num_heads, self.head_dim
         device = Q.device
+
+        # Get the max allowed index for your embedding table :: to be needed later
+        max_deg_val = self.deg_src_emb.num_embeddings - 1
 
         # ── Step 1: Bucket logits ─────────────────────────────────────
         q_input = torch.cat([Q, lap_pe], dim=-1)    # (N, d+k)
@@ -104,86 +107,167 @@ class LearnedLSHAttention(nn.Module):
         bq = l_q.argmax(dim=-1)                     # (N,)  — query bucket ids
         bk = l_k.argmax(dim=-1)                     # (N,)  — key   bucket ids
 
-        # ── Step 2: Sparse pair construction ─────────────────────────
-        lsh_pairs  = self._lsh_pairs(bq, bk, N, device)    # (2, P_lsh)
-        graph_pairs = edge_index                            # (2, E)
+        # Step 2 : Sort nodes by bucket ID
+        # We sort Queries and Keys separately because they might land in different buckets
+        q_idx = torch.argsort(bq)
+        k_idx = torch.argsort(bk)
 
-        # Union — concatenate then deduplicate
-        all_pairs = torch.cat([lsh_pairs, graph_pairs], dim=1)  # (2, P)
-        all_pairs = torch.unique(all_pairs, dim=1)               # deduplicate
+        # Step 3 : Reorder everything
+        Q_s, K_s, V_s = Q[q_idx], K[k_idx], V[k_idx]
+        PE_q_s, PE_k_s = lap_pe[q_idx], lap_pe[k_idx]
+        deg_q_s, deg_k_s = deg[q_idx], deg[k_idx]
 
-        src_p = all_pairs[0]   # query nodes  i
-        dst_p = all_pairs[1]   # key   nodes  j
+        # Step 4 : Create Nested Tensors
+        # Find bucket sizes (e.g., how many Queries in bucket 0, 1, 2...)
+        q_counts = torch.bincount(bq, minlength=self.num_buckets)
+        k_counts = torch.bincount(bk, minlength=self.num_buckets)
 
-        # ── Step 3: Attention scores ──────────────────────────────────
-        # Reshape to multi-head
-        Q_h = Q.view(N, self.num_heads, self.head_dim)   # (N, H, d/H)
+        # Step 4.1 : Calculate offsets (starting positions) for each bucket
+        # [0, count1, count1+count2, ...]
+        q_offsets = torch.cat([torch.zeros(1, dtype=torch.long, device=Q.device), q_counts.cumsum(0)])
+        k_offsets = torch.cat([torch.zeros(1, dtype=torch.long, device=Q.device), k_counts.cumsum(0)])
+
+        q_list = []
+        k_list = []
+        v_list = []
+        bias_list = []
+
+        # Step 5 :: iterate over buckets and find the attention scores
+        for b in range(self.num_buckets):
+            # Step 5.1 : Get the start and end indices for this bucket in the sorted arrays
+            s_q, e_q = q_offsets[b], q_offsets[b+1]
+            s_k, e_k = k_offsets[b], k_offsets[b+1]
+
+            # Skip if either side is empty (no attention possible)
+            if s_q == e_q or s_k == e_k:
+                continue
+
+            # Step 5.2 : Slice the sorted tensors
+            q_b = Q_s[s_q:e_q].view(-1, H, D_h).transpose(0, 1) # (H, Nq, Dh)
+            k_b = K_s[s_k:e_k].view(-1, H, D_h).transpose(0, 1) # (H, Nk, Dh)
+            v_b = V_s[s_k:e_k].view(-1, H, D_h).transpose(0, 1) # (H, Nk, Dh)
+
+            # Step 5.3 : Efficient PE Distance (Difference) inside the bucket
+            # shape: (Nq, Nk)
+            pe_q_b = PE_q_s[s_q:e_q]
+            pe_k_s_b = PE_k_s[s_k:e_k]
+
+            # Step 5.4 : Square distance: ||a-b||^2 = ||a||^2 + ||b||^2 - 2ab^T
+            dist_sq = (pe_q_b**2).sum(-1, keepdim=True) + \
+                    (pe_k_s_b**2).sum(-1, keepdim=True).T - \
+                    2 * torch.matmul(pe_q_b, pe_k_s_b.T)
+
+            # Step 5.5 : Take sqrt and bucketize for the SPD bias
+            dist = torch.sqrt(dist_sq.clamp(min=1e-9))
+            spd_idx = torch.bucketize(dist, self.spd_boundaries)
+
+            # Step 5.6 : Construct the Bias (H, Nq, Nk)
+            # SPD bias lookup
+            b_spd = self.spd_bias(spd_idx) # (Nq, Nk, H)
+
+            # Step 5.7 : Degree bias lookup
+            # Clamp the degrees so they never exceed that max index
+            d_q_clamped = deg_q_s[s_q:e_q].clamp(0, max_deg_val)
+            d_k_clamped = deg_k_s[s_k:e_k].clamp(0, max_deg_val)
+
+            # 3. Now perform the lookup safely
+            b_deg = self.deg_src_emb(d_q_clamped).unsqueeze(1) + \
+                    self.deg_dst_emb(d_k_clamped).unsqueeze(0) # (Nq, Nk, H)
+
+            # Combine and permute to (H, Nq, Nk) to match SDPA requirements
+            bias_b = (b_spd + b_deg).permute(2, 0, 1)
+
+            q_list.append(q_b)
+            k_list.append(k_b)
+            v_list.append(v_b)
+            bias_list.append(bias_b)
+
+        # Step 6 : 
+        out_list = []
+        for i in range(len(q_list)):
+            # q_b: (H, Nq, Dh), k_b: (H, Nk, Dh), bias_b: (H, Nq, Nk)
+            
+            # We call SDPA on regular tensors one bucket at a time
+            # This allows us to use the structural bias as the mask
+            bucket_out = F.scaled_dot_product_attention(
+                q_list[i], 
+                k_list[i], 
+                v_list[i], 
+                attn_mask=bias_list[i],
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=False
+            )
+            out_list.append(bucket_out)
+        
+        # ── Step 7: Restoration ───────────────────────
+        # 7.1 Create a buffer for the reordered output
+        # Shape: (N, H, head_dim)
+        h_lsh = torch.zeros(N, self.num_heads, self.head_dim, device=device)
+
+        # 7.2 Use the offsets to scatter the results back
+        out_ptr = 0  # Pointer to track which element of out_list we are using
+        for i, b in enumerate(range(self.num_buckets)):
+            s_q, e_q = q_offsets[b], q_offsets[b+1]
+            if s_q == e_q or k_offsets[b] == k_offsets[b+1]:
+                continue
+            
+            # The i-th element in out_list corresponds to bucket b
+            # We move (H, Nq, Dh) -> (Nq, H, Dh)
+            # Get the output for THIS specific non-empty bucket
+            bucket_output = out_list[out_ptr].transpose(0, 1) # (Nq_b, H, Dh)
+            
+            # Map back to original indices using the sorted index map
+            h_lsh[q_idx[s_q:e_q]] = bucket_output
+            
+            out_ptr += 1 # Move to the next result in out_list
+
+        # Step 8 : Process Graph Edges: Handle the edge_index pairs that LSH might have missed
+        # 8.1 Get source and target nodes for graph edges
+        src, dst = edge_index[0], edge_index[1]
+
+        # 8.2 Compute scores for these edges
+        # Reshape Q, K, V to (N, H, Dh) first
+        Q_h = Q.view(N, self.num_heads, self.head_dim)
         K_h = K.view(N, self.num_heads, self.head_dim)
         V_h = V.view(N, self.num_heads, self.head_dim)
 
-        # Dot-product score per head
-        q_pairs = Q_h[src_p]   # (P, H, d/H)
-        k_pairs = K_h[dst_p]   # (P, H, d/H)
-        scores  = (q_pairs * k_pairs).sum(-1) / (self.head_dim ** 0.5)  # (P, H)
+        q_e = Q_h[src] # (E, H, Dh)
+        k_e = K_h[dst] # (E, H, Dh)
 
-        # SPD bias
-        pe_i      = lap_pe[src_p]                         # (|P|, k)
-        pe_j      = lap_pe[dst_p]                         # (|P|, k)
-        pe_dist   = (pe_i - pe_j).norm(dim=-1)            # (|P|,)
-        spd_proxy = torch.bucketize(pe_dist, self.spd_boundaries)  # (|P|,) long
-        spd_b     = self.spd_bias(spd_proxy)              # (|P|, H)
-        scores    = scores + spd_b
+        # Dot product over the head_dim: (E, H)
+        edge_scores = (q_e * k_e).sum(-1) / (self.head_dim ** 0.5)
+
+        # 8.3 Apply the same structural biases to the edges
+        # PE distance bias
+        # Ensure the biases are (E, H)
+        edge_pe_dist = (lap_pe[src] - lap_pe[dst]).norm(dim=-1)
+        edge_spd_bin = torch.bucketize(edge_pe_dist, self.spd_boundaries)
+        edge_scores = edge_scores + self.spd_bias(edge_spd_bin)
 
         # Degree bias
-        deg_src   = deg[src_p].clamp(0, self.deg_src_emb.num_embeddings - 1)
-        deg_dst   = deg[dst_p].clamp(0, self.deg_dst_emb.num_embeddings - 1)
-        scores    = scores + self.deg_src_emb(deg_src) + self.deg_dst_emb(deg_dst)
+        edge_deg_src = deg[src].clamp(0, max_deg_val)
+        edge_deg_dst = deg[dst].clamp(0, max_deg_val)
+        edge_scores = edge_scores + self.deg_src_emb(edge_deg_src) + self.deg_dst_emb(edge_deg_dst)
 
-        # ── Step 4: Sparse softmax (per query node, per head) ─────────
-        # pyg softmax: normalises over all j for each i
-        # We do it head-by-head stacked on dim 1
-        alpha = pyg_softmax(scores, src_p, num_nodes=N)  # (P, H)
-        alpha = self.attn_drop(alpha)
+        # 8.4 Sparse Softmax and Aggregation
+        edge_attn = pyg_softmax(edge_scores, src, num_nodes=N)
+        edge_attn = self.attn_drop(edge_attn)
+        
+        # Aggregate values: Σ α_ij * V_j
+        h_graph = torch.zeros(N, self.num_heads, self.head_dim, device=device)
+        # Reshape src for scattering: (E) -> (E, 1, 1) then expand to (E, H, Dh)
+        index = src.view(-1, 1, 1).expand(-1, self.num_heads, self.head_dim)
+        values = edge_attn.unsqueeze(-1) * V_h[dst] # (E, H, 1) * (E, H, Dh) -> (E, H, Dh)
 
-        # ── Step 5: Value aggregation ─────────────────────────────────
-        # h_global_i = Σ_{j∈P(i)} α_ij · V_j
-        v_pairs   = V_h[dst_p]                           # (P, H, d/H)
-        weighted  = alpha.unsqueeze(-1) * v_pairs        # (P, H, d/H)
+        h_graph.scatter_add_(0, index, values)
 
-        h_global  = torch.zeros(N, self.num_heads, self.head_dim, device=device)
-        h_global.scatter_add_(0,
-            src_p.unsqueeze(-1).unsqueeze(-1).expand_as(weighted),
-            weighted)
+        # 9.1 Combine branches (Sum or Gated Sum) :: Final Combination and Projection
+        # For now, a simple weighted sum or residual-style addition
+        h_total = h_lsh + h_graph
 
-        h_global  = h_global.view(N, self.hidden_dim)   # (N, d)
-        h_global  = self.out_proj(h_global)
+        # 9.2 Final linear projection
+        h_total = h_total.view(N, self.hidden_dim)
+        out = self.out_proj(h_total)
+        out = F.dropout(out, p=self.dropout, training=self.training)
 
-        bucket_logits = {"q": l_q, "k": l_k}
-        return h_global, bucket_logits
-
-    # ─────────────────────────────────────────────────────────────────
-
-    def _lsh_pairs(self, bq: torch.Tensor, bk: torch.Tensor,
-                   N: int, device: torch.device) -> torch.Tensor:
-        """
-        Build P_LSH = {(i,j) | bQ(i) == bK(j)} efficiently.
-        Groups nodes by bucket, then forms all pairs within the same bucket.
-        """
-        pairs = []
-        for b in range(self.num_buckets):
-            q_nodes = (bq == b).nonzero(as_tuple=True)[0]   # nodes with bQ=b
-            k_nodes = (bk == b).nonzero(as_tuple=True)[0]   # nodes with bK=b
-            if q_nodes.numel() == 0 or k_nodes.numel() == 0:
-                continue
-            # Cartesian product
-            ii = q_nodes.unsqueeze(1).expand(-1, k_nodes.size(0)).reshape(-1)
-            jj = k_nodes.unsqueeze(0).expand(q_nodes.size(0), -1).reshape(-1)
-            # Remove self-loops
-            mask = ii != jj
-            pairs.append(torch.stack([ii[mask], jj[mask]], dim=0))
-
-        if not pairs:
-            # Fallback: no LSH pairs found, return empty
-            return torch.zeros(2, 0, dtype=torch.long, device=device)
-
-        return torch.cat(pairs, dim=1)                       # (2, P_lsh)
+        return out, {"q": l_q, "k": l_k}

@@ -1,0 +1,88 @@
+trishanku@skywarp:~/workspace/Graph-LSH-Information-Recovery$ bash run_model.sh train Cora ../Data
+Lets go...
+Running on skywarp.lcs2 with PID 1559929
+Task: train
+Datasets: Cora
+Path: ../Data
+Training model on Cora
+[17:40:17] [Train] Device: cuda
+[17:40:17] [DataLoader] Loading Cora ...
+[17:40:17] Number of nodes: 2708
+[17:40:17] Number of edges: 10556
+[17:40:17] Node feature shape: torch.Size([2708, 1433])
+[17:40:17] Labels shape: torch.Size([2708])
+[17:40:17] Edge_index shape torch.Size([2, 10556])
+[17:40:17] Number of classes 7
+[17:40:17] [DataLoader] Computing Laplacian PE (k=32) ...
+[17:40:18] Eigen values found : 33
+[17:40:18] Dynamic k selected: (1 :: 32) / 33
+[17:40:18] [DataLoader] Done. {'dataset_name': 'Cora', 'num_nodes': 2708, 'num_features': 1433, 'num_classes': 7, 'split': 'planetoid', 'lap_dim': 32}
+[17:40:18] Time taken to load for Cora: 0.11213541030883789
+[17:40:18] [Train] Config: ModelConfig(in_dim=1433, hidden_dim=128, out_dim=7, max_lap_k=32, threshold_on_lap_pe=0.95, lap_dim=32, gat_dropout=0.5, num_buckets=8, num_heads=4, dropout=0.5, num_layers=4, ffn_dim=256, max_spd=5, max_degree=10, num_spd_bins=10, use_recovery=True, recovery_lambda=0.25, use_hash_loss=True, hash_lambda=0.3, spd_gamma=1.0, spd_delta=0.5, lr=0.001, weight_decay=0.0001, epochs=300, patience=50, batch_size=1, dataset_name='Cora', data_path='../Data')
+[17:40:18] [Train] Parameters: 1,155,063
+[17:40:18]  Epoch     Loss   L_task   L_hash    L_rec   Train     Val    Test   Time
+[17:40:18] ────────────────────────────────────────────────────────────────────────
+[17:40:26]      1   5.2641   2.7192   3.7595   5.6685  0.1786  0.1140  0.1460   8.2s
+[17:41:17]     10   2.0449   1.9428   0.3390   0.0015  0.7214  0.5140  0.5200  50.7s
+[17:42:13]     20   1.0077   1.0009   0.0202   0.0028  0.9286  0.6460  0.6560  56.9s
+[17:43:10]     30   0.2661   0.2561   0.0295   0.0050  0.9643  0.7280  0.7470  56.9s
+[17:44:07]     40   0.1206   0.1157   0.0148   0.0019  1.0000  0.7580  0.7750  56.7s
+[17:45:04]     50   0.0190   0.0155   0.0105   0.0014  1.0000  0.7480  0.7640  56.8s
+[17:46:00]     60   0.0142   0.0130   0.0035   0.0007  1.0000  0.7600  0.7740  56.1s
+[17:46:56]     70   0.0014   0.0010   0.0011   0.0000  1.0000  0.7460  0.7590  56.1s
+[17:47:52]     80   0.0013   0.0010   0.0007   0.0001  1.0000  0.7480  0.7580  56.2s
+[17:48:48]     90   0.0007   0.0005   0.0006   0.0001  1.0000  0.7560  0.7490  56.1s
+[17:49:11] 
+[Train] Early stopping at epoch 94
+[17:49:11] 
+==================================================
+[17:49:11] Best Val Acc  : 0.7760
+[17:49:11] Best Test Acc : 0.7840
+[17:49:11] Model saved   : best_models/Cora_best.pt
+[17:49:11] [Plot] Saved → plots/Cora_training.png
+[17:49:11] [Plot] Saved → plots/Cora_recovery_loss.png
+
+--------------------------------------------------------------------------------------------------------
+
+trishanku@skywarp:~/workspace/Graph-LSH-Information-Recovery$ bash run_model.sh train CiteSeer ../Data
+Lets go...
+Running on skywarp.lcs2 with PID 1564557
+Task: train
+Datasets: CiteSeer
+Path: ../Data
+Training model on CiteSeer
+[17:50:02] [Train] Device: cuda
+[17:50:02] [DataLoader] Loading CiteSeer ...
+[17:50:02] Number of nodes: 3327
+[17:50:02] Number of edges: 9104
+[17:50:02] Node feature shape: torch.Size([3327, 3703])
+[17:50:02] Labels shape: torch.Size([3327])
+[17:50:02] Edge_index shape torch.Size([2, 9104])
+[17:50:02] Number of classes 6
+[17:50:02] [DataLoader] Computing Laplacian PE (k=32) ...
+[17:50:02] Eigen values found : 33
+[17:50:02] Dynamic k selected: (1 :: 32) / 33
+[17:50:02] [DataLoader] Done. {'dataset_name': 'CiteSeer', 'num_nodes': 3327, 'num_features': 3703, 'num_classes': 6, 'split': 'planetoid', 'lap_dim': 32}
+[17:50:02] Time taken to load for CiteSeer: 0.2671205997467041
+[17:50:03] [Train] Config: ModelConfig(in_dim=3703, hidden_dim=128, out_dim=6, max_lap_k=32, threshold_on_lap_pe=0.95, lap_dim=32, gat_dropout=0.5, num_buckets=8, num_heads=4, dropout=0.5, num_layers=4, ffn_dim=256, max_spd=5, max_degree=10, num_spd_bins=10, use_recovery=True, recovery_lambda=0.25, use_hash_loss=True, hash_lambda=0.3, spd_gamma=1.0, spd_delta=0.5, lr=0.001, weight_decay=0.0001, epochs=300, patience=50, batch_size=1, dataset_name='CiteSeer', data_path='../Data')
+[17:50:03] [Train] Parameters: 1,445,494
+[17:50:03]  Epoch     Loss   L_task   L_hash    L_rec   Train     Val    Test   Time
+[17:50:03] ────────────────────────────────────────────────────────────────────────
+[17:50:13]      1   5.1330   2.3665   4.1084   6.1359  0.1917  0.1900  0.1720   9.9s
+[17:51:14]     10   1.9858   1.7840   0.6649   0.0093  0.4750  0.2900  0.2550  61.8s
+[17:52:25]     20   0.9493   0.9472   0.0070   0.0001  0.9500  0.6200  0.6310  70.7s
+[17:53:36]     30   0.2412   0.2343   0.0208   0.0025  1.0000  0.6560  0.6470  70.6s
+[17:54:46]     40   0.0736   0.0694   0.0100   0.0048  1.0000  0.6340  0.6340  70.2s
+[17:55:56]     50   0.0231   0.0217   0.0043   0.0003  1.0000  0.6420  0.6380  70.4s
+[17:57:07]     60   0.0070   0.0058   0.0035   0.0008  1.0000  0.6340  0.6300  70.3s
+[17:58:17]     70   0.0042   0.0035   0.0022   0.0005  1.0000  0.6440  0.6450  70.1s
+[17:59:27]     80   0.0021   0.0018   0.0010   0.0002  1.0000  0.6360  0.6280  70.2s
+[18:00:02] 
+[Train] Early stopping at epoch 85
+[18:00:02] 
+==================================================
+[18:00:02] Best Val Acc  : 0.6680
+[18:00:02] Best Test Acc : 0.6550
+[18:00:02] Model saved   : best_models/CiteSeer_best.pt
+[18:00:02] [Plot] Saved → plots/CiteSeer_training.png
+[18:00:03] [Plot] Saved → plots/CiteSeer_recovery_loss.png
