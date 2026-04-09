@@ -59,11 +59,13 @@ class LearnedLSHAttention(nn.Module):
         self.mlp_q = nn.Sequential(
             nn.Linear(config.hidden_dim + config.lap_dim, config.hidden_dim),
             nn.ReLU(),
+            nn.Dropout(config.dropout), 
             nn.Linear(config.hidden_dim, config.num_buckets),
         )
         self.mlp_k = nn.Sequential(
             nn.Linear(config.hidden_dim + config.lap_dim, config.hidden_dim),
             nn.ReLU(),
+            nn.Dropout(config.dropout),
             nn.Linear(config.hidden_dim, config.num_buckets),
         )
 
