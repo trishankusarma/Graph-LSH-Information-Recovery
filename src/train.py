@@ -22,7 +22,7 @@ from .model.transformer_model  import SparseGraphTransformer
 from .hyperparameters.config   import get_config
 from .losses.hash_loss         import hash_supervision_loss
 from .losses.reconstruction_loss import recovery_loss
-from .utils import log, plot_training
+from .utils import log, plot_training, plot_bucket_distribution
 
 # ─────────────────────────────────────────────────────────────────────────────
 def set_seed(seed=42):
@@ -97,14 +97,17 @@ def train_epoch(model, data, optimizer, config, device):
 
 
 @torch.no_grad()
-def evaluate(model, data, device):
+def evaluate(model, data, device, epoch=None, config=None):
     model.eval()
-    logits, _ = model(
+    
+    # Capture aux output to get the bucket logits
+    logits, aux = model(
         data.x,
         data.lap_pe,
         data.edge_index,
         data.deg,
     )
+    
     y    = data.y
     pred = logits.argmax(dim=-1)
 
@@ -115,6 +118,22 @@ def evaluate(model, data, device):
         correct = (pred[mask] == y[mask]).sum().item()
         total   = mask.sum().item()
         results[split] = correct / total if total > 0 else 0.0
+        
+    # ── Plot Bucket Distribution ──────────────────────────────────────
+    # Plot on the first epoch, every 10th epoch, and the final epoch
+    if epoch is not None and config is not None:
+        if epoch == 1 or epoch % 10 == 0 or epoch == config.epochs:
+            # We usually plot the distribution of the final attention layer
+            last_layer_logits = aux["bucket_logits"][-1]
+            
+            plot_bucket_distribution(
+                bucket_logits=last_layer_logits,
+                num_buckets=config.num_buckets,
+                epoch=epoch,
+                dataset_name=config.dataset_name,
+                save_dir="plots"
+            )
+
     return results
 
 
@@ -184,7 +203,9 @@ def main(args):
 
     for epoch in range(1, config.epochs + 1):
         losses = train_epoch(model, data, optimizer, config, device)
-        accs   = evaluate(model, data, device)
+        
+        # Pass epoch and config to evaluate() to enable plotting
+        accs   = evaluate(model, data, device, epoch=epoch, config=config)
         scheduler.step()
 
         # Record history every epoch
@@ -216,6 +237,8 @@ def main(args):
 
         if patience_count >= config.patience:
             log(f"\n[Train] Early stopping at epoch {epoch}")
+            # Ensure we plot the final distribution right before exiting
+            evaluate(model, data, device, epoch=epoch, config=config)
             break
 
     # ── Final results ─────────────────────────────────────────────────
