@@ -37,13 +37,16 @@ class ModelConfig:
 
     # ── Hash supervision ──────────────────────────────────────────────
     use_hash_loss: bool = True
-    hash_lambda: float = 0.3       # λ — weight of hash KL loss
+    hash_lambda: float = 0.2       # λ — weight of hash KL loss
     spd_gamma: float = 1.0         # γ in structural utility g()
     spd_delta: float = 0.5         # δ in structural utility g()
 
+    # load_balancing
+    load_balancing_lamda: float = 2.0
+
     # ── Training ──────────────────────────────────────────────────────
     lr: float = 1e-3
-    weight_decay: float = 1e-4
+    weight_decay: float = 5e-4
     epochs: int = 300
     patience: int = 50             # early stopping
     batch_size: int = 1            # full-batch for small graphs

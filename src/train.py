@@ -21,6 +21,7 @@ from .data_loader              import load_dataset
 from .model.transformer_model  import SparseGraphTransformer
 from .hyperparameters.config   import get_config
 from .losses.hash_loss         import hash_supervision_loss
+from .losses.load_balancing_loss import load_balancing_loss
 from .losses.reconstruction_loss import recovery_loss
 from .utils import log, plot_training, plot_bucket_distribution
 
@@ -78,11 +79,18 @@ def train_epoch(model, data, optimizer, config, device):
             bucket_logits_q = aux["bucket_logits"][-1]["q"],
             confidence      = aux["confidences"][-1],
         )
+    
+    # Inside train_epoch
+    L_balance = torch.tensor(0.0, device=device)
+    for bl in aux["bucket_logits"]:
+        L_balance += load_balancing_loss(bl['q']) + load_balancing_loss(bl['k'])
+    L_balance /= len(aux["bucket_logits"])
 
-    # ── Total loss ────────────────────────────────────────────────────
-    loss = (L_task
-            + config.hash_lambda     * L_hash
-            + config.recovery_lambda * L_rec)
+    # Add it to total loss with a tuning coefficient (e.g., 0.1 or 0.01)
+    loss = (L_task + 
+            config.hash_lambda * L_hash + 
+            config.recovery_lambda * L_rec + 
+            config.load_balancing_lamda * L_balance)
 
     loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -93,6 +101,7 @@ def train_epoch(model, data, optimizer, config, device):
         "L_task": L_task.item(),
         "L_hash": L_hash.item(),
         "L_rec" : L_rec.item(),
+        "L_load_balancing": L_balance.item()
     }
 
 
@@ -184,6 +193,7 @@ def main(args):
         "L_task"   : [],
         "L_hash"   : [],
         "L_rec"    : [],
+        "L_load_balancing" : [],
         "train_acc": [],
         "val_acc"  : [],
         "test_acc" : [],
@@ -196,7 +206,7 @@ def main(args):
     os.makedirs("best_models", exist_ok=True)
 
     log(f"{'Epoch':>6} {'Loss':>8} {'L_task':>8} {'L_hash':>8} "
-        f"{'L_rec':>8} {'Train':>7} {'Val':>7} {'Test':>7} {'Time':>6}")
+        f"{'L_rec':>8} {'L_load':>8} {'Train':>7} {'Val':>7} {'Test':>7} {'Time':>6}")
     log("─" * 72)
 
     t0 = time.time()
@@ -214,6 +224,7 @@ def main(args):
         history["L_task"].append(losses["L_task"])
         history["L_hash"].append(losses["L_hash"])
         history["L_rec"].append(losses["L_rec"])
+        history["L_load_balancing"].append(losses["L_load_balancing"])
         history["train_acc"].append(accs["train"])
         history["val_acc"].append(accs["val"])
         history["test_acc"].append(accs["test"])
@@ -231,7 +242,7 @@ def main(args):
             elapsed = time.time() - t0
             t0 = time.time()
             log(f"{epoch:>6} {losses['loss']:>8.4f} {losses['L_task']:>8.4f} "
-                f"{losses['L_hash']:>8.4f} {losses['L_rec']:>8.4f} "
+                f"{losses['L_hash']:>8.4f} {losses['L_rec']:>8.4f} {losses['L_load_balancing']:>8.4f} "
                 f"{accs['train']:>7.4f} {accs['val']:>7.4f} "
                 f"{accs['test']:>7.4f} {elapsed:>5.1f}s")
 
